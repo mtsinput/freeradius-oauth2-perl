@@ -1,7 +1,10 @@
 FROM freeradius/freeradius-server:3.2.0
 
 RUN mkdir -p /opt/freeradius-oauth2-perl
-COPY . /opt/freeradius-oauth2-perl/
+COPY policy /opt/freeradius-oauth2-perl/
+COPY module /opt/freeradius-oauth2-perl/
+COPY dictionary /opt/freeradius-oauth2-perl/
+COPY main.pm /opt/freeradius-oauth2-perl/
 COPY docker-entrypoint.sh /docker-entrypoint.sh
 RUN chmod 755 /docker-entrypoint.sh
 
