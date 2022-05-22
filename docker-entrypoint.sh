@@ -5,17 +5,29 @@ config_file="/etc/raddb/clients.conf"
 
 # We start config file creation
 
-cat <<EOF >> $config_file
-client office {
-	ipaddr = $RADIUS_CLIENT_IP_ADDRESS
-	secret = $RADIUS_SECRET
-	limit {
-		max_connections = 50
-		lifetime = 0
-		idle_timeout = 30
-	}
+IFS=","
+addr_idx=0
+secr_idx=0
+for ADDR in $RADIUS_CLIENT_IP_ADDRESS; do
+    for SECRET in $RADIUS_SECRET; do
+	if [ "$addr_idx" -eq "$secr_idx" ]; then
+  		cat <<EOF >> $config_file
+client office$addr_idx {
+        ipaddr = $ADDR
+        secret = $SECRET
+        limit {
+                max_connections = 50
+                lifetime = 0
+                idle_timeout = 30
+        }
 }
 EOF
+	fi
+	secr_idx=$(($secr_idx+1))
+    done
+    addr_idx=$(($addr_idx+1))
+    secr_idx=0
+done
 
 realm_proxy_file="/etc/freeradius/proxy.conf"
 
@@ -31,6 +43,10 @@ realm $OAUTH_REALM_DOMAIN {
     }
 }
 EOF
+
+if [ ! -z "$RADIUS_LOG_DESTINATION" ]; then
+    sed -i 's/destination = files/destination = '"$RADIUS_LOG_DESTINATION"'/g' /etc/freeradius/radiusd.conf
+fi
 
 # this if will check if the first argument is a flag
 # but only works if all arguments require a hyphenated flag
