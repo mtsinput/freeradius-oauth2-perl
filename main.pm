@@ -98,8 +98,16 @@ if ($^V ge v5.28) {
 }
 use constant RADTIME_FMT => '%b %e %Y %H:%M:%S %Z';
 sub to_radtime {
-	my ($s) = @_;
-	return Time::Piece->strptime($s, '%Y-%m-%dT%H:%M:%SZ')->strftime(RADTIME_FMT);
+	my ($ss) = @_;
+	my $s = join( ',', @$ss );
+	my $mY = substr $s, 0, 4;
+	my $mM = substr $s, 4, 2;
+	my $mD = substr $s, 6, 2;
+	my $mH = substr $s, 8, 2;
+	my $mMi = substr $s, 10, 2;
+	my $mS = substr $s, 12, 2;
+	my $myDate = $mY . '-' . $mM . '-' . $mD . 'T' . $mH . ':' . $mMi . ':' . $mS . 'Z';
+	return Time::Piece->strptime($myDate, '%Y-%m-%dT%H:%M:%SZ')->strftime(RADTIME_FMT);
 }
 sub worker {
 	my $thr;
@@ -143,7 +151,7 @@ sub worker {
 				my $r = $ua->post($discovery->{token_endpoint}, [
 					client_id => $client_id,
 					client_secret => $client_secret,
-					scope => 'https://graph.microsoft.com/.default',
+					#scope => 'https://graph.microsoft.com/.default',
 					grant_type => 'client_credentials'
 				]);
 				unless ($r->is_success) {
@@ -188,77 +196,90 @@ sub worker {
 				my ($purpose, $uri, $callback) = @_;
 
 				my $delta;
+				my $subArr;
 				while (defined($uri)) {
 					radiusd::radlog(L_DBG, "oauth2 worker ($realm): $purpose page");
 
 					my $data = &fetch($purpose, $uri);
+					#print STDERR Dumper $uri;
+					if (ref($data) eq 'ARRAY') {
+						$delta = $data;
+						foreach $subArr (@$data) {
+							while (my ($key, $value) = each %$subArr) {
+								#print STDERR Dumper "$key: $value";
+							}
+							&$callback($subArr);
+						}
+					} esle {
+						&$callback($data->{value});
 
-					&$callback($data->{value});
-
-					$delta = $data->{'@odata.deltaLink'};
-					$uri = $data->{'@odata.nextLink'};
+						$delta = $data->{'@odata.deltaLink'};
+						$uri = $data->{'@odata.nextLink'};
+					}
 				}
-
+				#print STDERR Dumper ref $delta;
+				#print STDERR Dumper $delta;
 				return $delta;
 			}
 
 			# delta queries can be seen as a database replication stream so we have to retain everything
 			# unless explictly told that it can be deleted via @remove->reason->'deleted'
 			my (%users, %groups);
-			my $usersUri = 'https://graph.microsoft.com/v1.0/users/delta?$select=id,userPrincipalName,isResourceAccount,accountEnabled,lastPasswordChangeDateTime';
-			my $groupsUri = 'https://graph.microsoft.com/v1.0/groups/delta?$select=id,displayName,members';
+			my $usersUri = radiusd::xlat("%{config:realm[$realm].oauth2.users_uri}");
+			my $groupsUri = radiusd::xlat("%{config:realm[$realm].oauth2.groups_uri}");
 			while ($running) {
 				radiusd::radlog(L_INFO, "oauth2 worker ($realm): sync");
 
 				radiusd::radlog(L_DBG, "oauth2 worker ($realm): sync users");
-				$usersUri = &walk('users', $usersUri, sub {
-					my ($data) = @_;
+				
+				if (defined($usersUri)) {
+    					radiusd::radlog(L_DBG, "oauth2 worker ($realm): users page");
+    					my $data = &fetch('users', $usersUri);
+				
+					#print STDERR Dumper $data;
 
-#					print STDERR Dumper $data;
-
-					foreach my $d (grep { ($_->{isResourceAccount} || JSON::PP::false) != JSON::PP::true } @$data) {
-						my $id = $d->{id};
-						if (exists($d->{'@removed'}) && $d->{'@removed'}{reason} eq 'deleted') {
-							delete $users{$id};
-						} else {
-							my $r = exists($users{$id}) ? $users{$id} : shared_clone({});
-							$users{$id} = $r;
-							$r->{R} = exists($d->{'@removed'});
-							$r->{n} = $d->{userPrincipalName} if (exists($d->{userPrincipalName}));
-							$r->{e} = $d->{accountEnabled} == JSON::PP::true if (exists($d->{accountEnabled}));
-							$r->{p} = to_radtime($d->{lastPasswordChangeDateTime}) if (exists($d->{lastPasswordChangeDateTime}));
-						}
-					}
-				});
-
+            			foreach my $d (@$data) {
+                    			my $id = $d->{id};
+#					print STDERR Dumper $d->{'attributes'}{modifyTimestamp};
+                    			if (exists($d->{'@removed'}) && $d->{'@removed'}{reason} eq 'deleted') {
+                            			delete $users{$id};
+                    			} else {
+                            			my $r = exists($users{$id}) ? $users{$id} : shared_clone({});
+                            			$users{$id} = $r;
+                            			$r->{R} = exists($d->{'@removed'});
+                            			$r->{n} = $d->{username} if (exists($d->{username}));
+                            			$r->{e} = $d->{enabled} == JSON::PP::true if (exists($d->{enabled}));
+                            			$r->{p} = to_radtime($d->{'attributes'}{modifyTimestamp}) if (exists($d->{'attributes'}{modifyTimestamp}));
+                    			}
+            			}
+				}
 				radiusd::radlog(L_DBG, "oauth2 worker ($realm): sync groups");
-				$groupsUri = &walk('groups', $groupsUri, sub {
-					my ($data) = @_;
-
-#					print STDERR Dumper $data;
-
-					foreach my $d (@$data) {
-						my $id = $d->{id};
-						if (exists($d->{'@removed'}) && $d->{'@removed'}{reason} eq 'deleted') {
-							delete $groups{$id};
-						} else {
-							unless (exists($groups{$id})) {
-								$groups{$id} = shared_clone({});
-								$groups{$id}->{m} = shared_clone({});
-							}
-							my $r = $groups{$id};
-							$r->{R} = exists($d->{'@removed'});
-							$r->{n} = $d->{displayName} if (exists($d->{displayName}));
-							foreach (@{$d->{'members@delta'}}) {
-								if (exists($_->{'@removed'})) {	# always 'deleted'
-									delete $r->{m}->{$_->{id}};
-								} else {
-									$r->{m}->{$_->{id}} = undef;
-								}
-							}
-						}
-					}
-				});
+				if (defined($groupsUri)) {
+                                        radiusd::radlog(L_DBG, "oauth2 worker ($realm): users page");
+                                        my $data = &fetch('groups', $groupsUri);
+                                
+				foreach my $d (@$data) {
+            				my $id = $d->{id};
+            				if (exists($d->{'@removed'}) && $d->{'@removed'}{reason} eq 'deleted') {
+                    				delete $groups{$id};
+            				} else {
+                    				unless (exists($groups{$id})) {
+                            				$groups{$id} = shared_clone({});
+                            				$groups{$id}->{m} = shared_clone({});
+                    				}
+                    				my $r = $groups{$id};
+                    				$r->{R} = exists($d->{'@removed'});
+                    				$r->{n} = $d->{name} if (exists($d->{name}));
+                    				foreach (@{$d->{'members@delta'}}) {
+                            				if (exists($_->{'@removed'})) { # always 'deleted'
+                                    				delete $r->{m}->{$_->{id}};
+                            				} else {
+                                    				$r->{m}->{$_->{id}} = undef;
+                            				}
+                    				}
+            				}
+    				}
+				}
 
 #				print STDERR Dumper \%users;
 #				print STDERR Dumper \%groups;
@@ -279,6 +300,7 @@ sub worker {
 				{
 					lock(%{$realms{$realm}});
 					%{$realms{$realm}} = %db;
+					#print STDERR Dumper \%realms;
 					cond_signal(%{$realms{$realm}});
 				}
 
@@ -287,6 +309,7 @@ sub worker {
 
 				my $sleep = int($ttl - ($ttl / 3) + rand(2 * $ttl / 3));
 				radiusd::radlog(L_INFO, "oauth2 worker ($realm): syncing in $sleep seconds");
+				#print STDERR Dumper \%db;
 				sleep($sleep);
 			}
 		};
@@ -306,7 +329,8 @@ sub worker {
 sub authorize {
 	radiusd::radlog(L_DBG, 'oauth2 authorize');
 
-	my $username = $RAD_REQUEST{'User-Name'};
+	# my $username = $RAD_REQUEST{'User-Name'};
+	my $username = $RAD_REQUEST{'Stripped-User-Name'};
 	my $realm = $RAD_REQUEST{'Realm'};
 	return RLM_MODULE_INVALID unless (defined($username) && defined($realm));
 
@@ -324,6 +348,8 @@ sub authorize {
 
 			$realms{$realm} = shared_clone({});
 			lock(%{$realms{$realm}});
+			#print STDERR Dumper 'Check step authorize 1';
+			#print STDERR Dumper \%realms;
 			push @sups, threads->create(\&worker, $realm, $discovery_uri, $client_id, $client_secret);
 			cond_wait(%{$realms{$realm}});
 		}
@@ -354,7 +380,8 @@ sub authorize {
 sub authenticate {
 	radiusd::radlog(L_DBG, 'oauth2 authenticate');
 
-	my $username = $RAD_REQUEST{'User-Name'};
+	#my $username = $RAD_REQUEST{'User-Name'};
+	my $username = $RAD_REQUEST{'Stripped-User-Name'};
 	my $realm = $RAD_REQUEST{'Realm'};
 
 	my $state;
@@ -371,9 +398,10 @@ sub authenticate {
 	my $r = $ua->post($state->{t}, [
 		client_id => $client_id,
 		client_secret => $client_secret,
-		scope => 'openid email',
+		scope => 'openid username email',
 		grant_type => 'password',
-		username => $RAD_REQUEST{'User-Name'},
+		username => $RAD_REQUEST{'Stripped-User-Name'},
+		#username => $RAD_REQUEST{'User-Name'},
 		password => $RAD_REQUEST{'User-Password'}
 	]);
 	unless ($r->is_success) {
