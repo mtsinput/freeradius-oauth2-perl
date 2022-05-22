@@ -20,9 +20,9 @@ services:
       - radius-net
     environment:
       - TZ=Europe/Kiev
-      - RADIUS_SECRET=some_server_secret
-      - RADIUS_CACHE_PASSWORD=no
-      - RADIUS_CLIENT_IP_ADDRESS=192.168.10.10
+      - RADIUS_SECRET=some_server_secret,second_server_secret,third_server_secret
+      - RADIUS_CACHE_PASSWORD=yes
+      - RADIUS_CLIENT_IP_ADDRESS=192.168.10.10,192.168.10.11,192.168.10.12
       - OAUTH_REALM_DOMAIN=sso-example.com
       - OAUTH_DISCOVERY_URI=https://example.com/auth/realms/sso-example
       - OAUTH_GROUPS_URI=https://example.com/auth/admin/realms/sso-example/groups
