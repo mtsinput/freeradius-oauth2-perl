@@ -7,7 +7,7 @@ config_file="/etc/raddb/clients.conf"
 
 cat <<EOF >> $config_file
 client office {
-	ipaddr = $RADIUS_IP_ADDRESS
+	ipaddr = $RADIUS_CLIENT_IP_ADDRESS
 	secret = $RADIUS_SECRET
 	limit {
 		max_connections = 50

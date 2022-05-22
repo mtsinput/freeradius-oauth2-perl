@@ -1,0 +1,36 @@
+version: '3.3'
+
+networks:
+  radius-net:
+
+services:
+  freeradius:
+    image: wdmaster/freeradis-server:1.0.0
+    hostname: "freeradius"
+    ports:
+      - target: 1812
+        published: 1812
+        protocol: udp
+        mode: host
+      - target: 1813
+        published: 1813
+        protocol: udp
+        mode: host
+    networks:
+      - radius-net
+    environment:
+      - TZ=Europe/Kiev
+      - RADIUS_SECRET=some_server_secret
+      - RADIUS_CACHE_PASSWORD=no
+      - RADIUS_CLIENT_IP_ADDRESS=192.168.10.10
+      - OAUTH_REALM_DOMAIN=sso-example.com
+      - OAUTH_DISCOVERY_URI=https://example.com/auth/realms/sso-example
+      - OAUTH_GROUPS_URI=https://example.com/auth/admin/realms/sso-example/groups
+      - OAUTH_USERS_URI=https://example.com/auth/admin/realms/sso-example/users
+      - OAUTH_CLIENT_ID=sso-radius
+      - OAUTH_CLIENT_SECRET=XXXXXXXXXX
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: [node.labels.id == 1]
