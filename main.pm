@@ -63,6 +63,7 @@ $ENV{LC_ALL} = 'C' unless (defined($ENV{LC_ALL}));
 #  * using "example.com = { oauth2 = ${realm[example.com].oauth2} }" sort of works but throws a warning
 #   * this does though make configuration harder for the end user
 radiusd::radlog(L_DBG, 'oauth2 global');
+
 #radiusd::radlog(L_DBG, 'oauth2 global: ' . Dumper \%RAD_PERLCONF);
 
 # ...instead we opt for runtime checking:
@@ -79,11 +80,11 @@ $ua->default_header('Accept-Encoding' => scalar HTTP::Message::decodable());
 if (defined($RAD_PERLCONF{debug}) && $RAD_PERLCONF{debug} =~ /^(?:1|true|yes)$/i) {
 	radiusd::radlog(L_INFO, 'debugging enabled, you will see the HTTPS requests in the clear!');
 
+
 	sub handler {
 		my $r = $_[0]->clone;
 		$r->decode;
-		radiusd::radlog(L_DBG, $_)
-			foreach split /\n/, $r->dump;
+		radiusd::radlog(L_DBG, $_)foreach split /\n/, $r->dump;
 	}
 
 	$ua->add_handler('request_send', \&handler);
@@ -97,6 +98,8 @@ if ($^V ge v5.28) {
 	warn "old version of Perl (pre-5.28) detected, non-English locale users must run FreeRADIUS with LC_ALL=C";
 }
 use constant RADTIME_FMT => '%b %e %Y %H:%M:%S %Z';
+
+
 sub to_radtime {
 	my ($ss) = @_;
 	my $s = join( ',', @$ss );
@@ -109,6 +112,8 @@ sub to_radtime {
 	my $myDate = $mY . '-' . $mM . '-' . $mD . 'T' . $mH . ':' . $mMi . ':' . $mS . 'Z';
 	return Time::Piece->strptime($myDate, '%Y-%m-%dT%H:%M:%SZ')->strftime(RADTIME_FMT);
 }
+
+
 sub worker {
 	my $thr;
 	my $running = 1;
@@ -118,7 +123,7 @@ sub worker {
 	setlocale(LC_ALL, $ENV{LC_ALL});
 
 	our ($realm, $discovery_uri, $client_id, $client_secret) = @_;
-	our $ttl = int($RAD_PERLCONF{ttl} || 30);
+	our $ttl = int($RAD_PERLCONF{ttl} || 120);
 	$ttl = 10 if ($ttl < 10);
 
 	radiusd::radlog(L_DBG, "oauth2 worker ($realm): supervisor started (tid=${\threads->tid()})");
@@ -143,17 +148,21 @@ sub worker {
 			radiusd::radlog(L_DBG, "oauth2 worker ($realm): started (tid=${\threads->tid()})");
 
 			our ($authorization_var, $authorization_ttl);
+
+
 			sub authorization {
 				return $authorization_var if (defined($authorization_var) && $authorization_ttl > time());
 
 				radiusd::radlog(L_DBG, "oauth2 worker ($realm): fetching token");
 
-				my $r = $ua->post($discovery->{token_endpoint}, [
-					client_id => $client_id,
-					client_secret => $client_secret,
-					#scope => 'https://graph.microsoft.com/.default',
-					grant_type => 'client_credentials'
-				]);
+				my $r = $ua->post(
+					$discovery->{token_endpoint},
+					[
+						client_id => $client_id,
+						client_secret => $client_secret,
+						grant_type => 'client_credentials'
+					]
+				);
 				unless ($r->is_success) {
 					radiusd::radlog(L_ERR, "oauth2 worker ($realm): token failed: ${\$r->status_line}");
 					die "token ($realm): ${\$r->status_line}" if (is_server_error($r->code));
@@ -167,6 +176,7 @@ sub worker {
 
 				return $authorization_var;
 			}
+
 
 			sub fetch {
 				my ($purpose, $uri) = @_;
@@ -192,6 +202,7 @@ sub worker {
 				return decode_json $r->decoded_content;
 			}
 
+
 			sub walk {
 				my ($purpose, $uri, $callback) = @_;
 
@@ -201,22 +212,26 @@ sub worker {
 					radiusd::radlog(L_DBG, "oauth2 worker ($realm): $purpose page");
 
 					my $data = &fetch($purpose, $uri);
+
 					#print STDERR Dumper $uri;
 					if (ref($data) eq 'ARRAY') {
 						$delta = $data;
 						foreach $subArr (@$data) {
 							while (my ($key, $value) = each %$subArr) {
+
 								#print STDERR Dumper "$key: $value";
 							}
 							&$callback($subArr);
 						}
-					} esle {
+					}
+					esle {
 						&$callback($data->{value});
 
 						$delta = $data->{'@odata.deltaLink'};
 						$uri = $data->{'@odata.nextLink'};
 					}
 				}
+
 				#print STDERR Dumper ref $delta;
 				#print STDERR Dumper $delta;
 				return $delta;
@@ -231,75 +246,76 @@ sub worker {
 				radiusd::radlog(L_INFO, "oauth2 worker ($realm): sync");
 
 				radiusd::radlog(L_DBG, "oauth2 worker ($realm): sync users");
-				
+
 				if (defined($usersUri)) {
-    					radiusd::radlog(L_DBG, "oauth2 worker ($realm): users page");
-    					my $data = &fetch('users', $usersUri);
-				
+					radiusd::radlog(L_DBG, "oauth2 worker ($realm): users page");
+					my $data = &fetch('users', $usersUri);
+
 					#print STDERR Dumper $data;
 
-            			foreach my $d (@$data) {
-                    			my $id = $d->{id};
-#					print STDERR Dumper $d->{'attributes'}{modifyTimestamp};
-                    			if (exists($d->{'@removed'}) && $d->{'@removed'}{reason} eq 'deleted') {
-                            			delete $users{$id};
-                    			} else {
-                            			my $r = exists($users{$id}) ? $users{$id} : shared_clone({});
-                            			$users{$id} = $r;
-                            			$r->{R} = exists($d->{'@removed'});
-                            			$r->{n} = $d->{username} if (exists($d->{username}));
-                            			$r->{e} = $d->{enabled} == JSON::PP::true if (exists($d->{enabled}));
-                            			$r->{p} = to_radtime($d->{'attributes'}{modifyTimestamp}) if (exists($d->{'attributes'}{modifyTimestamp}));
-                    			}
-            			}
+					foreach my $d (@$data) {
+						my $id = $d->{id};
+
+						#					print STDERR Dumper $d->{'attributes'}{modifyTimestamp};
+						if (exists($d->{'@removed'}) && $d->{'@removed'}{reason} eq 'deleted') {
+							delete $users{$id};
+						} else {
+							my $r = exists($users{$id}) ? $users{$id} : shared_clone({});
+							$users{$id} = $r;
+							$r->{R} = exists($d->{'@removed'});
+							$r->{n} = $d->{username} if (exists($d->{username}));
+							$r->{e} = $d->{enabled} == JSON::PP::true if (exists($d->{enabled}));
+							$r->{p} = to_radtime($d->{'attributes'}{modifyTimestamp}) if (exists($d->{'attributes'}{modifyTimestamp}));
+						}
+					}
 				}
 				radiusd::radlog(L_DBG, "oauth2 worker ($realm): sync groups");
 				if (defined($groupsUri)) {
-                                        radiusd::radlog(L_DBG, "oauth2 worker ($realm): users page");
-                                        my $data = &fetch('groups', $groupsUri);
-                                
-				foreach my $d (@$data) {
-            				my $id = $d->{id};
-            				if (exists($d->{'@removed'}) && $d->{'@removed'}{reason} eq 'deleted') {
-                    				delete $groups{$id};
-            				} else {
-                    				unless (exists($groups{$id})) {
-                            				$groups{$id} = shared_clone({});
-                            				$groups{$id}->{m} = shared_clone({});
-                    				}
-                    				my $r = $groups{$id};
-                    				$r->{R} = exists($d->{'@removed'});
-                    				$r->{n} = $d->{name} if (exists($d->{name}));
-                    				foreach (@{$d->{'members@delta'}}) {
-                            				if (exists($_->{'@removed'})) { # always 'deleted'
-                                    				delete $r->{m}->{$_->{id}};
-                            				} else {
-                                    				$r->{m}->{$_->{id}} = undef;
-                            				}
-                    				}
-            				}
-    				}
+					radiusd::radlog(L_DBG, "oauth2 worker ($realm): users page");
+					my $data = &fetch('groups', $groupsUri);
+
+					foreach my $d (@$data) {
+						my $id = $d->{id};
+						if (exists($d->{'@removed'}) && $d->{'@removed'}{reason} eq 'deleted') {
+							delete $groups{$id};
+						} else {
+							unless (exists($groups{$id})) {
+								$groups{$id} = shared_clone({});
+								$groups{$id}->{m} = shared_clone({});
+							}
+							my $r = $groups{$id};
+							$r->{R} = exists($d->{'@removed'});
+							$r->{n} = $d->{name} if (exists($d->{name}));
+							foreach (@{$d->{'members@delta'}}) {
+								if (exists($_->{'@removed'})) { # always 'deleted'
+									delete $r->{m}->{$_->{id}};
+								} else {
+									$r->{m}->{$_->{id}} = undef;
+								}
+							}
+						}
+					}
 				}
 
-#				print STDERR Dumper \%users;
-#				print STDERR Dumper \%groups;
+				#				print STDERR Dumper \%users;
+				#				print STDERR Dumper \%groups;
 
 				radiusd::radlog(L_DBG, "oauth2 worker ($realm): apply");
 				my %db :shared;
 				$db{t} = $discovery->{token_endpoint};
 				$db{u} = shared_clone({});
-				$db{u}{$users{$_}->{n}} = $users{$_}->{p}
-					foreach grep { !$users{$_}->{R} && $users{$_}->{e} } keys %users;
+				$db{u}{$users{$_}->{n}} = $users{$_}->{p}foreach grep { !$users{$_}->{R} && $users{$_}->{e} } keys %users;
 				$db{g} = shared_clone({});
 				foreach (grep { !$groups{$_}->{R} } keys %groups) {
 					my @m = map { $users{$_}->{n} } grep { $users{$_}->{e} } keys %{$groups{$_}->{m}};
 					$db{g}->{$groups{$_}->{n}} = shared_clone({ map { $_, undef } @m })
-						if (scalar @m);
+					  if (scalar @m);
 				}
 
 				{
 					lock(%{$realms{$realm}});
 					%{$realms{$realm}} = %db;
+
 					#print STDERR Dumper \%realms;
 					cond_signal(%{$realms{$realm}});
 				}
@@ -309,6 +325,7 @@ sub worker {
 
 				my $sleep = int($ttl - ($ttl / 3) + rand(2 * $ttl / 3));
 				radiusd::radlog(L_INFO, "oauth2 worker ($realm): syncing in $sleep seconds");
+
 				#print STDERR Dumper \%db;
 				sleep($sleep);
 			}
@@ -326,6 +343,7 @@ sub worker {
 	}
 }
 
+
 sub authorize {
 	radiusd::radlog(L_DBG, 'oauth2 authorize');
 
@@ -337,6 +355,7 @@ sub authorize {
 	{
 		lock(%realms);
 		unless (exists($realms{$realm})) {
+
 			# discovery has already been checked that it exists in policy
 			#  * %{xlat:...} does not work :(
 			my $discovery_uri = radiusd::xlat(radiusd::xlat("%{config:realm[$realm].oauth2.discovery}"));
@@ -348,6 +367,7 @@ sub authorize {
 
 			$realms{$realm} = shared_clone({});
 			lock(%{$realms{$realm}});
+
 			#print STDERR Dumper 'Check step authorize 1';
 			#print STDERR Dumper \%realms;
 			push @sups, threads->create(\&worker, $realm, $discovery_uri, $client_id, $client_secret);
@@ -360,7 +380,8 @@ sub authorize {
 		lock(%{$realms{$realm}});
 		$state = $realms{$realm};
 	}
-#	print STDERR Dumper $state;
+
+	#	print STDERR Dumper $state;
 
 	return RLM_MODULE_NOTFOUND unless (exists($state->{u}{$username}));
 
@@ -376,6 +397,7 @@ sub authorize {
 
 	return RLM_MODULE_UPDATED;
 }
+
 
 sub authenticate {
 	radiusd::radlog(L_DBG, 'oauth2 authenticate');
@@ -395,30 +417,35 @@ sub authenticate {
 	radiusd::radlog(L_INFO, "oauth2 token");
 
 	# $state->{t} is static so no race
-	my $r = $ua->post($state->{t}, [
-		client_id => $client_id,
-		client_secret => $client_secret,
-		scope => 'openid username email',
-		grant_type => 'password',
-		username => $RAD_REQUEST{'Stripped-User-Name'},
-		#username => $RAD_REQUEST{'User-Name'},
-		password => $RAD_REQUEST{'User-Password'}
-	]);
+	my $r = $ua->post(
+		$state->{t},
+		[
+			client_id => $client_id,
+			client_secret => $client_secret,
+			scope => 'openid username email',
+			grant_type => 'password',
+			username => $RAD_REQUEST{'Stripped-User-Name'},
+
+			#username => $RAD_REQUEST{'User-Name'},
+			password => $RAD_REQUEST{'User-Password'}
+		]
+	);
 	unless ($r->is_success) {
 		radiusd::radlog(L_ERR, "oauth2 token failed: ${\$r->status_line}");
 		return RLM_MODULE_FAIL if (is_server_error($r->code));
 		my $response = decode_json $r->decoded_content;
 		my @e = ( 'Error: ' . $response->{'error'} );
 		push @e, split /\r\n/ms, $response->{'error_description'}
-			if (defined($response->{'error_description'}));
+		  if (defined($response->{'error_description'}));
 		$RAD_REPLY{'Reply-Message'} = \@e;
 		return RLM_MODULE_REJECT;
 	}
 
-#	print STDERR Dumper decode_json $r->decoded_content;
+	#	print STDERR Dumper decode_json $r->decoded_content;
 
 	return RLM_MODULE_OK;
 }
+
 
 sub detach {
 	radiusd::radlog(L_DBG, 'oauth2 detach');
