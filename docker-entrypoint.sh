@@ -10,8 +10,8 @@ addr_idx=0
 secr_idx=0
 for ADDR in $RADIUS_CLIENT_IP_ADDRESS; do
     for SECRET in $RADIUS_SECRET; do
-	if [ "$addr_idx" -eq "$secr_idx" ]; then
-  		cat <<EOF >> $config_file
+        if [ "$addr_idx" -eq "$secr_idx" ]; then
+            cat <<EOF >>$config_file
 client office$addr_idx {
         ipaddr = $ADDR
         secret = $SECRET
@@ -22,16 +22,16 @@ client office$addr_idx {
         }
 }
 EOF
-	fi
-	secr_idx=$(($secr_idx+1))
+        fi
+        secr_idx=$(($secr_idx + 1))
     done
-    addr_idx=$(($addr_idx+1))
+    addr_idx=$(($addr_idx + 1))
     secr_idx=0
 done
 
 realm_proxy_file="/etc/freeradius/proxy.conf"
 
-cat <<EOF >> $realm_proxy_file
+cat <<EOF >>$realm_proxy_file
 realm $OAUTH_REALM_DOMAIN {
     oauth2 {
 	discovery = "$OAUTH_DISCOVERY_URI"
