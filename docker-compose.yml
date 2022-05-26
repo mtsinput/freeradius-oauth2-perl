@@ -25,9 +25,10 @@ services:
       - RADIUS_CACHE_PASSWORD=yes
       - RADIUS_CLIENT_IP_ADDRESS=192.168.10.10,192.168.10.11,192.168.10.12
       - OAUTH_REALM_DOMAIN=sso-example.com
-      - OAUTH_DISCOVERY_URI=https://example.com/auth/realms/sso-example
-      - OAUTH_GROUPS_URI=https://example.com/auth/admin/realms/sso-example/groups
-      - OAUTH_USERS_URI=https://example.com/auth/admin/realms/sso-example/users
+      - OAUTH_REALM_DOMAIN=sso-example.com
+      - OAUTH_REALM_NAME=sso-example
+      - OAUTH_URI=https://example.com
+      - OAUTH_RADIUS_GROUP_NAME=Radius_Allow
       - OAUTH_CLIENT_ID=sso-radius
       - OAUTH_CLIENT_SECRET=XXXXXXXXXX
     deploy:
