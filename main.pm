@@ -213,7 +213,7 @@ sub worker {
 
 					my $data = &fetch($purpose, $uri);
 
-					#print STDERR Dumper $uri;
+					# print STDERR Dumper $uri;
 					if (ref($data) eq 'ARRAY') {
 						$delta = $data;
 						foreach $subArr (@$data) {
@@ -232,42 +232,77 @@ sub worker {
 					}
 				}
 
-				#print STDERR Dumper ref $delta;
-				#print STDERR Dumper $delta;
+				# print STDERR Dumper ref $delta;
+				# print STDERR Dumper $delta;
 				return $delta;
 			}
 
 			# delta queries can be seen as a database replication stream so we have to retain everything
 			# unless explictly told that it can be deleted via @remove->reason->'deleted'
 			my (%users, %groups);
-			my $usersUri = radiusd::xlat("%{config:realm[$realm].oauth2.users_uri}");
-			my $groupsUri = radiusd::xlat("%{config:realm[$realm].oauth2.groups_uri}");
+			my $usersUri;
+			my $groupsUri = radiusd::xlat("%{config:realm[$realm].oauth2.oauth_uri}") . '/auth/admin/realms/' . radiusd::xlat("%{config:realm[$realm].oauth2.oauth_realm_name}") . '/groups';
+			my $access_group = radiusd::xlat("%{config:realm[$realm].oauth2.access_group}");
+			my $access_group_id;
+			if (defined($groupsUri)) {
+				my $data = &fetch('groups', $groupsUri);
+				foreach my $d (@$data) {
+					my $id = $d->{id};
+					my $group_name = $d->{name} if (exists($d->{name}));
+					if ($group_name eq $access_group) {
+						radiusd::radlog(L_INFO, "oauth2 found access group ID ($id) for group ($access_group)");
+						$access_group_id=$id;
+					}
+				}
+
+				# preparing usersUri
+				if (length($access_group_id) > 1) {
+					radiusd::radlog(L_DBG, "oauth2 access group ID found, compiling usersUri");
+					$usersUri = radiusd::xlat("%{config:realm[$realm].oauth2.oauth_uri}") . '/auth/admin/realms/' . radiusd::xlat("%{config:realm[$realm].oauth2.oauth_realm_name}") . '/groups/' . $access_group_id . '/members';
+				} else {
+					radiusd::radlog(L_INFO, "oauth2 access group ID not found!!! All users will be allowed!");
+					$usersUri = radiusd::xlat("%{config:realm[$realm].oauth2.oauth_uri}") . '/auth/admin/realms/' . radiusd::xlat("%{config:realm[$realm].oauth2.oauth_realm_name}") . '/users';
+				}
+			}
+
 			while ($running) {
 				radiusd::radlog(L_INFO, "oauth2 worker ($realm): sync");
 
 				radiusd::radlog(L_DBG, "oauth2 worker ($realm): sync users");
 
+				# print STDERR Dumper '$usersUri', $usersUri;
+
 				if (defined($usersUri)) {
 					radiusd::radlog(L_DBG, "oauth2 worker ($realm): users page");
 					my $data = &fetch('users', $usersUri);
 
-					#print STDERR Dumper $data;
-
+					# print STDERR Dumper $data;
+					my $update_time = localtime->datetime;
 					foreach my $d (@$data) {
 						my $id = $d->{id};
 
-						#					print STDERR Dumper $d->{'attributes'}{modifyTimestamp};
-						if (exists($d->{'@removed'}) && $d->{'@removed'}{reason} eq 'deleted') {
-							delete $users{$id};
-						} else {
-							my $r = exists($users{$id}) ? $users{$id} : shared_clone({});
-							$users{$id} = $r;
-							$r->{R} = exists($d->{'@removed'});
-							$r->{n} = $d->{username} if (exists($d->{username}));
-							$r->{e} = $d->{enabled} == JSON::PP::true if (exists($d->{enabled}));
-							$r->{p} = to_radtime($d->{'attributes'}{modifyTimestamp}) if (exists($d->{'attributes'}{modifyTimestamp}));
+						# print STDERR Dumper $d->{'attributes'}{modifyTimestamp};
+						my $r = exists($users{$id}) ? $users{$id} : shared_clone({});
+						$users{$id} = $r;
+						$r->{R} = exists($d->{'@removed'});
+						$r->{n} = $d->{username} if (exists($d->{username}));
+						$r->{e} = $d->{enabled} == JSON::PP::true if (exists($d->{enabled}));
+						$r->{p} = to_radtime($d->{'attributes'}{modifyTimestamp}) if (exists($d->{'attributes'}{modifyTimestamp}));
+						$r->{t} = $update_time;
+					}
+
+					# check users && delete forbidden
+					foreach my $key (keys %users) {
+						my $m = $users{$key}->{t};
+
+						# print STDERR Dumper "$key<->$m\n";
+						if ($m ne $update_time) {
+							delete $users{$key};
+							radiusd::radlog(L_INFO, "oauth2 revoke access for user ID ($key)");
 						}
 					}
+
+
 				}
 				radiusd::radlog(L_DBG, "oauth2 worker ($realm): sync groups");
 				if (defined($groupsUri)) {
@@ -297,8 +332,8 @@ sub worker {
 					}
 				}
 
-				#				print STDERR Dumper \%users;
-				#				print STDERR Dumper \%groups;
+				# print STDERR Dumper \%users;
+				# print STDERR Dumper \%groups;
 
 				radiusd::radlog(L_DBG, "oauth2 worker ($realm): apply");
 				my %db :shared;
@@ -358,7 +393,12 @@ sub authorize {
 
 			# discovery has already been checked that it exists in policy
 			#  * %{xlat:...} does not work :(
-			my $discovery_uri = radiusd::xlat(radiusd::xlat("%{config:realm[$realm].oauth2.discovery}"));
+			my $oauth_uri = radiusd::xlat(radiusd::xlat("%{config:realm[$realm].oauth2.oauth_uri}"));
+			my $oauth_realm_name = radiusd::xlat(radiusd::xlat("%{config:realm[$realm].oauth2.oauth_realm_name}"));
+			my $access_group = radiusd::xlat(radiusd::xlat("%{config:realm[$realm].oauth2.access_group}"));
+			my $discovery_uri = $oauth_uri . '/auth/realms/' . $oauth_realm_name;
+
+			# print STDERR Dumper $discovery_uri;
 
 			# these should exist, if they do not...explode
 			my $client_id = radiusd::xlat("%{config:realm[$realm].oauth2.client_id}");
@@ -368,8 +408,8 @@ sub authorize {
 			$realms{$realm} = shared_clone({});
 			lock(%{$realms{$realm}});
 
-			#print STDERR Dumper 'Check step authorize 1';
-			#print STDERR Dumper \%realms;
+			# print STDERR Dumper 'Check step authorize 1';
+			# print STDERR Dumper \%realms;
 			push @sups, threads->create(\&worker, $realm, $discovery_uri, $client_id, $client_secret);
 			cond_wait(%{$realms{$realm}});
 		}
@@ -381,7 +421,7 @@ sub authorize {
 		$state = $realms{$realm};
 	}
 
-	#	print STDERR Dumper $state;
+	# print STDERR Dumper $state;
 
 	return RLM_MODULE_NOTFOUND unless (exists($state->{u}{$username}));
 
@@ -441,7 +481,7 @@ sub authenticate {
 		return RLM_MODULE_REJECT;
 	}
 
-	#	print STDERR Dumper decode_json $r->decoded_content;
+	# print STDERR Dumper decode_json $r->decoded_content;
 
 	return RLM_MODULE_OK;
 }

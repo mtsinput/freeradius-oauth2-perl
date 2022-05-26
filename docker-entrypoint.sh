@@ -34,9 +34,9 @@ realm_proxy_file="/etc/freeradius/proxy.conf"
 cat <<EOF >>$realm_proxy_file
 realm $OAUTH_REALM_DOMAIN {
     oauth2 {
-	discovery = "$OAUTH_DISCOVERY_URI"
-	users_uri = "$OAUTH_USERS_URI"
-	groups_uri = "$OAUTH_GROUPS_URI"
+    oauth_uri = "$OAUTH_URI"
+    oauth_realm_name = "$OAUTH_REALM_NAME"
+    access_group = "$OAUTH_RADIUS_GROUP_NAME"
 	client_id = "$OAUTH_CLIENT_ID"
 	client_secret = "$OAUTH_CLIENT_SECRET"
 	cache_password = $RADIUS_CACHE_PASSWORD
@@ -69,3 +69,4 @@ fi
 
 # else default to run whatever the user wanted like "bash" or "sh"
 exec "$@"
+
