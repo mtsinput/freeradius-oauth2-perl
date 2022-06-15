@@ -245,13 +245,16 @@ sub worker {
 			my $access_group = radiusd::xlat("%{config:realm[$realm].oauth2.access_group}");
 			my $access_group_id;
 			if (defined($groupsUri)) {
-				my $data = &fetch('groups', $groupsUri);
-				foreach my $d (@$data) {
-					my $id = $d->{id};
-					my $group_name = $d->{name} if (exists($d->{name}));
-					if ($group_name eq $access_group) {
-						radiusd::radlog(L_INFO, "oauth2 found access group ID ($id) for group ($access_group)");
-						$access_group_id=$id;
+				my $data;
+				eval { $data = &fetch('groups', $groupsUri); };
+				if($@ eq ''){
+					foreach my $d (@$data) {
+						my $id = $d->{id};
+						my $group_name = $d->{name} if (exists($d->{name}));
+						if ($group_name eq $access_group) {
+							radiusd::radlog(L_INFO, "oauth2 found access group ID ($id) for group ($access_group)");
+							$access_group_id=$id;
+						}
 					}
 				}
 
@@ -274,21 +277,26 @@ sub worker {
 
 				if (defined($usersUri)) {
 					radiusd::radlog(L_DBG, "oauth2 worker ($realm): users page");
-					my $data = &fetch('users', $usersUri);
+					my $data;
+					eval { $data = &fetch('users', $usersUri); };
 
 					# print STDERR Dumper $data;
 					my $update_time = localtime->datetime;
-					foreach my $d (@$data) {
-						my $id = $d->{id};
+					if($@ eq ''){
+						foreach my $d (@$data) {
+							my $id = $d->{id};
 
-						# print STDERR Dumper $d->{'attributes'}{modifyTimestamp};
-						my $r = exists($users{$id}) ? $users{$id} : shared_clone({});
-						$users{$id} = $r;
-						$r->{R} = exists($d->{'@removed'});
-						$r->{n} = $d->{username} if (exists($d->{username}));
-						$r->{e} = $d->{enabled} == JSON::PP::true if (exists($d->{enabled}));
-						$r->{p} = to_radtime($d->{'attributes'}{modifyTimestamp}) if (exists($d->{'attributes'}{modifyTimestamp}));
-						$r->{t} = $update_time;
+							# print STDERR Dumper $d->{'attributes'}{modifyTimestamp};
+							my $r = exists($users{$id}) ? $users{$id} : shared_clone({});
+							$users{$id} = $r;
+							$r->{R} = exists($d->{'@removed'});
+							$r->{n} = $d->{username} if (exists($d->{username}));
+							$r->{e} = $d->{enabled} == JSON::PP::true if (exists($d->{enabled}));
+							$r->{p} = to_radtime($d->{'attributes'}{modifyTimestamp}) if (exists($d->{'attributes'}{modifyTimestamp}));
+							$r->{t} = $update_time;
+						}
+					} else {
+						radiusd::radlog(L_ERR, "oauth2 worker ($realm): received during sync ($@)");
 					}
 
 					# check users && delete forbidden
@@ -307,28 +315,32 @@ sub worker {
 				radiusd::radlog(L_DBG, "oauth2 worker ($realm): sync groups");
 				if (defined($groupsUri)) {
 					radiusd::radlog(L_DBG, "oauth2 worker ($realm): users page");
-					my $data = &fetch('groups', $groupsUri);
-
-					foreach my $d (@$data) {
-						my $id = $d->{id};
-						if (exists($d->{'@removed'}) && $d->{'@removed'}{reason} eq 'deleted') {
-							delete $groups{$id};
-						} else {
-							unless (exists($groups{$id})) {
-								$groups{$id} = shared_clone({});
-								$groups{$id}->{m} = shared_clone({});
-							}
-							my $r = $groups{$id};
-							$r->{R} = exists($d->{'@removed'});
-							$r->{n} = $d->{name} if (exists($d->{name}));
-							foreach (@{$d->{'members@delta'}}) {
-								if (exists($_->{'@removed'})) { # always 'deleted'
-									delete $r->{m}->{$_->{id}};
-								} else {
-									$r->{m}->{$_->{id}} = undef;
+					my $data;
+					eval{ $data = &fetch('groups', $groupsUri); };
+					if($@ eq ''){
+						foreach my $d (@$data) {
+							my $id = $d->{id};
+							if (exists($d->{'@removed'}) && $d->{'@removed'}{reason} eq 'deleted') {
+								delete $groups{$id};
+							} else {
+								unless (exists($groups{$id})) {
+									$groups{$id} = shared_clone({});
+									$groups{$id}->{m} = shared_clone({});
+								}
+								my $r = $groups{$id};
+								$r->{R} = exists($d->{'@removed'});
+								$r->{n} = $d->{name} if (exists($d->{name}));
+								foreach (@{$d->{'members@delta'}}) {
+									if (exists($_->{'@removed'})) { # always 'deleted'
+										delete $r->{m}->{$_->{id}};
+									} else {
+										$r->{m}->{$_->{id}} = undef;
+									}
 								}
 							}
 						}
+					} else {
+						radiusd::radlog(L_ERR, "oauth2 worker ($realm): received during sync ($@)");
 					}
 				}
 
@@ -454,7 +466,7 @@ sub authenticate {
 	my $client_id = radiusd::xlat("%{config:realm[$realm].oauth2.client_id}");
 	my $client_secret = radiusd::xlat("%{config:realm[$realm].oauth2.client_secret}");
 
-	radiusd::radlog(L_INFO, "oauth2 token");
+	radiusd::radlog(L_INFO, "oauth2 get token ($username)");
 
 	# $state->{t} is static so no race
 	my $r = $ua->post(
